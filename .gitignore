@@ -88,3 +88,11 @@ apps/geolibre-desktop/src-tauri/mas/embedded.provisionprofile
 
 # Local Android Gradle cache for the vendored Tauri geolocation plugin.
 apps/geolibre-desktop/src-tauri/vendor/tauri-plugin-geolocation/android/.gradle/
+
+# MTH deployment secrets — never commit
+vps/
+*.env
+.env
+gh_token.txt
+Caddyfile
+projects.json
