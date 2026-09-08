@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Survey Viewer — MT Højgaard</title>
 <style>
   :root{
@@ -17,7 +17,7 @@
   body{margin:0;font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
        color:var(--ink);background:var(--bg);overflow:hidden}
 
-  .shell{display:grid;grid-template-columns:var(--rail) var(--pane) 1fr;height:100vh;
+  .shell{display:grid;grid-template-columns:var(--rail) var(--pane) 1fr;height:100vh;height:100dvh;
          transition:grid-template-columns .18s ease}
   .shell.collapsed{grid-template-columns:var(--rail) 0 1fr}
 
@@ -120,16 +120,62 @@
          font-size:13px;opacity:0;pointer-events:none;transition:opacity .2s;z-index:5}
   .toast.on{opacity:.94}
 
+  .pane-x{display:none;width:34px;height:34px;flex:none;border:0;background:none;padding:0;
+          color:var(--muted);cursor:pointer;border-radius:var(--radius)}
+  .pane-x svg{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.8;
+              stroke-linecap:round}
+  .pane-x:hover{background:var(--bg);color:var(--ink)}
+
+  /* ---------- small screens ----------
+     The rail becomes a bottom tab bar (thumb reach) and the pane a bottom sheet
+     over the map, rather than a 304px column beside a 56px rail — which on a
+     360px phone left almost no map. Heights use dvh so the sheet is not cut off
+     by mobile browser chrome, and safe-area insets keep the bar clear of the
+     home indicator.                                                          */
   @media (max-width:820px){
-    .shell{grid-template-columns:var(--rail) 1fr}
-    .shell .pane{position:absolute;left:var(--rail);top:0;bottom:0;width:var(--pane);z-index:4;
-                 box-shadow:0 0 30px rgba(0,0,0,.14)}
+    :root{--railh:58px}
+
+    .shell,.shell.collapsed{grid-template-columns:1fr;grid-template-rows:1fr auto}
+    main{grid-row:1;grid-column:1}
+
+    .rail{grid-row:2;grid-column:1;flex-direction:row;justify-content:space-evenly;
+          align-items:center;height:var(--railh);padding:0 4px;
+          padding-bottom:env(safe-area-inset-bottom);gap:2px}
+    .rail .mark,.rail .spacer{display:none}
+    .tab{flex:1 1 0;width:auto;min-width:0;height:48px;gap:4px}
+    .tab svg{width:20px;height:20px}
+
+    .pane{position:fixed;left:0;right:0;top:auto;
+          bottom:calc(var(--railh) + env(safe-area-inset-bottom));
+          width:auto;max-height:70dvh;z-index:6;
+          border-right:0;border-top:1px solid var(--line);
+          border-radius:14px 14px 0 0;box-shadow:0 -8px 30px rgba(0,0,0,.20)}
     .shell.collapsed .pane{display:none}
+
+    /* Grab handle: signals the sheet is dismissable. Tapping the active tab
+       also closes it, but nobody discovers that on their own. */
+    .pane-head{position:relative;padding-top:20px}
+    .pane-head::before{content:"";position:absolute;top:8px;left:50%;
+                       transform:translateX(-50%);width:34px;height:4px;
+                       border-radius:2px;background:var(--line)}
+    .pane-x{display:grid;place-items:center}
+
+    footer{display:none}
+    .toast{bottom:16px}
+  }
+
+  /* Coarse pointers: the 44px minimum touch target, on any screen size. */
+  @media (pointer:coarse){
+    .proj{padding:13px 12px}
+    button.act{padding:11px 12px}
+    .dl{padding:11px 10px}
+    .lyr{padding:9px 0}
+    .lyr input{width:18px;height:18px}
   }
 </style>
 </head>
 <body>
-<div class="shell collapsed-none" id="shell">
+<div class="shell" id="shell">
 
   <nav class="rail" role="tablist" aria-label="Sections">
     <div class="mark">MTH</div>
@@ -145,6 +191,8 @@
   <div class="pane">
     <div class="pane-head">
       <span class="ttl" id="pane-title">Projects</span>
+      <button class="pane-x" id="panex" type="button" aria-label="Close panel">
+        <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
     </div>
 
     <div class="scroll">
@@ -212,6 +260,11 @@ function showView(name){
   $("#pane-title").textContent={projects:"Projects",details:"Details",upload:"Upload"}[name]||name;
 }
 $$(".tab").forEach(t=>t.onclick=()=>showView(t.dataset.view));
+$("#panex").onclick=()=>$("#shell").classList.add("collapsed");
+/* On a phone the pane is a sheet over the map, so open onto the map and let
+   the user raise the sheet. On desktop it is a column beside the map and
+   costs nothing, so it stays open. */
+if(window.matchMedia("(max-width:820px)").matches) $("#shell").classList.add("collapsed");
 
 /* ---------- rendering ---------- */
 function renderProjects(){
