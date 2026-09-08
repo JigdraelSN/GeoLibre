@@ -15,6 +15,29 @@ const LIDAR_PREFLIGHT_RESET = `
   box-sizing: revert;
 }
 `;
+// MTH: the control's own glyph is a scatter of dots that reads as decoration
+// beside the other map controls. An eye states what the button does — show or
+// hide the point-cloud panel. Masked rather than set as a background image so
+// it inherits `currentColor` and keeps following the light/dark theme sync.
+const LIDAR_TOGGLE_EYE_ICON = `
+.geolibre-lidar-layer-control .lidar-control-toggle .lidar-control-icon svg {
+  display: none;
+}
+
+.geolibre-lidar-layer-control .lidar-control-toggle .lidar-control-icon::after {
+  content: "";
+  width: 20px;
+  height: 20px;
+  background-color: currentColor;
+  -webkit-mask: var(--mth-eye) center / contain no-repeat;
+  mask: var(--mth-eye) center / contain no-repeat;
+}
+
+.geolibre-lidar-layer-control .lidar-control-toggle {
+  --mth-eye: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7Z'/%3E%3Ccircle cx='12' cy='12' r='3'/%3E%3C/svg%3E");
+}
+`;
+
 const LIDAR_PANEL_LAYOUT_FIX = `
 .lidar-control-panel {
   overflow: hidden;
@@ -207,7 +230,7 @@ const LIDAR_PANEL_LAYOUT_FIX = `
 if (typeof document !== "undefined" && !document.getElementById(LIDAR_STYLE_ID)) {
   const style = document.createElement("style");
   style.id = LIDAR_STYLE_ID;
-  style.textContent = `${LIDAR_PREFLIGHT_RESET}\n${lidarStyle}\n${LIDAR_PANEL_LAYOUT_FIX}`;
+  style.textContent = `${LIDAR_PREFLIGHT_RESET}\n${lidarStyle}\n${LIDAR_PANEL_LAYOUT_FIX}\n${LIDAR_TOGGLE_EYE_ICON}`;
   document.head.appendChild(style);
 }
 

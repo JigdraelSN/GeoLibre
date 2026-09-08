@@ -2885,7 +2885,9 @@ export function openLidarLayerPanel(app: GeoLibreAppAPI): void {
  * `maplibre-gl-lidar` and its markup is not a stable interface.
  */
 export function closeLidarLayerPanel(): void {
-  hideLidarControl(lidarControl);
+  // Collapse only — the toggle button stays on the map so the panel can be
+  // reopened. Use hideLidarControl() for teardown, where the control goes away.
+  lidarControl?.collapse();
 }
 
 export function openSplattingLayerPanel(app: GeoLibreAppAPI): void {
@@ -3355,7 +3357,12 @@ async function openStandaloneLidarControl(
       showLidarControl(lidarControl);
       lidarControl?.expand();
     } else if (created) {
-      hideLidarControl(lidarControl);
+      // MTH: restore mounts the control to re-stream saved point clouds. Keep
+      // its toggle button on the map (collapsed) rather than hiding the whole
+      // control, so a project that carries a point cloud always offers a way
+      // to open the styling panel.
+      showLidarControl(lidarControl);
+      lidarControl?.collapse();
     }
   }, 0);
   return true;
@@ -3888,7 +3895,11 @@ function createLidarControl(
     theme: resolveDocumentTheme(),
   });
   lidarLayerAdapter = new LidarLayerAdapterClass(control);
-  control.on("collapse", () => hideLidarControl(control));
+  // MTH: closing the panel leaves the toggle button in place, so the button is
+  // the persistent way back in. Upstream hid the whole control on collapse,
+  // which meant the only route back was the Add Data menu — no use in an
+  // embedded viewer whose toolbar is not the user's entry point.
+  control.on("collapse", () => showLidarControl(control));
   control.on("load", createLidarLoadHandler());
   control.on("unload", createLidarUnloadHandler());
   lidarStoreUnsubscribe ??= useAppStore.subscribe((state, previous) => {
