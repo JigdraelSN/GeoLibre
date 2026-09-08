@@ -118,7 +118,12 @@ export const maplibreElevationProfilePlugin: GeoLibrePlugin = {
     // Every other route in (a first activation, a session deactivate, a New
     // Project reset) leaves it open, so enabling the plugin shows the panel
     // instead of just the collapsed mountain button.
-    const openPanel = !(pendingState?.collapsed ?? false);
+    // MTH: default collapsed, not open. Activating from the Plugins menu should
+    // put the control's button in the top-left stack beside the LiDAR eye, not
+    // throw a chart panel over the map — the same complaint that made us fix the
+    // LiDAR panel. One click opens the chart. A saved project asking for
+    // `collapsed: false` still opens it, so the round-trip is preserved.
+    const openPanel = !(pendingState?.collapsed ?? true);
     control = control ?? createControl(app);
     const added = app.addMapControl(control, position);
     if (!added) {

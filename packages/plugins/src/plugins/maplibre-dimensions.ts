@@ -588,6 +588,9 @@ export const maplibreDimensionsPlugin: GeoLibrePlugin = {
   id: DIMENSIONS_PLUGIN_ID,
   name: "Dimensions",
   version: "0.1.0",
+  // MTH: distance/area measurement is a primary tool for survey deliverables,
+  // not an opt-in extra. Mounts a map control at top-left, beside the LiDAR eye.
+  activeByDefault: true,
   activate: (app: GeoLibreAppAPI) => {
     appApi = app;
     pluginActive = true;
