@@ -137,8 +137,6 @@
       <svg viewBox="0 0 24 24"><path d="M3 7h6l2 2h10v10H3z"/></svg>Projects</button>
     <button class="tab" role="tab" data-view="details" aria-selected="false">
       <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>Details</button>
-    <button class="tab" role="tab" data-view="layers" aria-selected="false">
-      <svg viewBox="0 0 24 24"><path d="M12 3 3 8l9 5 9-5z"/><path d="m3 13 9 5 9-5"/></svg>Layers</button>
     <button class="tab" role="tab" data-view="upload" aria-selected="false">
       <svg viewBox="0 0 24 24"><path d="M12 16V4m0 0L8 8m4-4 4 4"/><path d="M4 16v3h16v-3"/></svg>Upload</button>
     <div class="spacer"></div>
@@ -146,7 +144,6 @@
 
   <div class="pane">
     <div class="pane-head">
-      <img src="mth_logo.png" alt="MT Højgaard">
       <span class="ttl" id="pane-title">Projects</span>
     </div>
 
@@ -157,11 +154,6 @@
 
       <div class="view" id="v-details">
         <div id="details-body"><p class="hint">Choose a project to see its details.</p></div>
-      </div>
-
-      <div class="view" id="v-layers">
-        <h2>Map layers</h2>
-        <div id="layers"><p class="hint">Choose a project first.</p></div>
         <h2>Views</h2>
         <div class="row" id="views"><p class="hint">—</p></div>
         <h2>Actions</h2>
@@ -217,7 +209,7 @@ function showView(name){
   activeView=name;
   $$(".tab").forEach(t=>t.setAttribute("aria-selected",String(t.dataset.view===name)));
   $$(".view").forEach(v=>v.classList.toggle("on",v.id===`v-${name}`));
-  $("#pane-title").textContent={projects:"Projects",details:"Details",layers:"Layers",upload:"Upload"}[name]||name;
+  $("#pane-title").textContent={projects:"Projects",details:"Details",upload:"Upload"}[name]||name;
 }
 $$(".tab").forEach(t=>t.onclick=()=>showView(t.dataset.view));
 
@@ -276,22 +268,9 @@ function renderViews(p){
   });
 }
 
-async function renderLayers(){
-  const box=$("#layers");
-  if(!current){box.innerHTML=`<p class="hint">Choose a project first.</p>`;return;}
-  if(!api){box.innerHTML=`<p class="hint">Unavailable in fallback mode.</p>`;return;}
-  try{
-    const layers=await api.listLayers(); box.innerHTML="";
-    layers.forEach(l=>{
-      const row=document.createElement("label"); row.className="lyr";
-      const cb=document.createElement("input"); cb.type="checkbox"; cb.checked=l.visible!==false;
-      cb.onchange=()=>api.setLayerVisibility(l.id,cb.checked).catch(()=>toast("Toggle failed"));
-      const sp=document.createElement("span"); sp.textContent=l.name||l.id;
-      row.append(cb,sp); box.appendChild(row);
-    });
-    if(!layers.length) box.innerHTML=`<p class="hint">No layers.</p>`;
-  }catch{ box.innerHTML=`<p class="hint">—</p>`; }
-}
+/* The layer list lived here. GeoLibre's own LAYERS rail does the same job
+   inside the viewer, with styling and ordering this list never had, so the
+   duplicate is gone rather than fixed.                                     */
 
 /* ---------- selection ---------- */
 async function select(id,push){
@@ -305,7 +284,7 @@ async function select(id,push){
   $("#empty").hidden=true; $("#map").hidden=false;
 
   if(api && !firstLoad){
-    try{ await api.loadProject(p.projectUrl); await renderLayers(); showView("details"); return; }
+    try{ await api.loadProject(p.projectUrl); showView("details"); return; }
     catch{}
   }
   $("#map").src=viewerUrl(p);
@@ -361,7 +340,7 @@ async function ensureApi(){
     const mod=await import("https://cdn.jsdelivr.net/npm/@geolibre/embed/+esm");
     api=await mod.connect($("#map"),{origin:cfg.viewerOrigin,timeoutMs:20000});
     $("#mode").textContent="live"; $("#mode").style.color="var(--navy)";
-    api.on?.("projectLoaded",()=>{ renderLayers(); watchAndRebrand(); });
+    api.on?.("projectLoaded",()=>{ watchAndRebrand(); });
   }catch{
     api=null; $("#mode").textContent="basic";
     $("#mode").title="Embed API unavailable — switching projects reloads the map";
@@ -370,7 +349,6 @@ async function ensureApi(){
 $("#map").addEventListener("load",async()=>{
   watchAndRebrand();
   await ensureApi();
-  renderLayers();
 });
 
 /* ---------- boot ---------- */
