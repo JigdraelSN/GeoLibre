@@ -4667,6 +4667,19 @@ function createLidarLoadHandler(): LidarControlEventHandler {
   return (event) => {
     if (!event.pointCloud || !("source" in event.pointCloud)) return;
 
+    // MTH: prefer true colour when the cloud carries it. LIDAR_OPTIONS sets
+    // `colorScheme: "elevation"`, which is the safe default for any cloud, but a
+    // photogrammetric or RGB-tagged survey reads as a recognisable site in true
+    // colour and as an abstract heatmap in elevation. The colour mode is not
+    // persisted in the project file (the layer metadata carries only the
+    // hasRGB/hasIntensity/hasClassification capability flags), so this is the
+    // only place the choice can be made per cloud rather than per deployment.
+    // Elevation stays one click away in the panel, and clouds without RGB are
+    // untouched.
+    if (event.pointCloud.hasRGB) {
+      lidarControl?.setColorScheme("rgb");
+    }
+
     const store = useAppStore.getState();
     const layer = createLidarStoreLayer(event.pointCloud);
 
