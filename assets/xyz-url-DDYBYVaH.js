@@ -1,0 +1,1 @@
+import{a as e,i as r,n as a,o as l,r as o,s,t}from"./xyz-url-D6901McO.js";export{t as createXyzTileUrlTemplate,a as hasXyzTilePlaceholders,o as normalizeTileUrlTemplate,r as registerXyzTileProtocol,e as resolveProjectXyzLayers,l as resolveXyzTileUrlTemplate,s as routeWmsLayerThroughNativeProtocol};
