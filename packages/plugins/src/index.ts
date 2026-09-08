@@ -126,6 +126,7 @@ export {
   openLegendPanelWithItems,
   LIDAR_SOURCE_KIND,
   openLidarLayerPanel,
+  closeLidarLayerPanel,
   restoreLidarLayers,
   openMeasurePanel,
   openMinimapPanel,

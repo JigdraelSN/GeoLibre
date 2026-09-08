@@ -2876,6 +2876,18 @@ export function openLidarLayerPanel(app: GeoLibreAppAPI): void {
   void openStandaloneLidarControl(app);
 }
 
+/**
+ * Closes the LiDAR panel and hides its toggle button, the counterpart to
+ * {@link openLidarLayerPanel}. No-op when the control was never mounted.
+ *
+ * Exists so an embedding host can hide the panel through a supported entry
+ * point instead of reaching into the viewer's DOM: the panel is created by
+ * `maplibre-gl-lidar` and its markup is not a stable interface.
+ */
+export function closeLidarLayerPanel(): void {
+  hideLidarControl(lidarControl);
+}
+
 export function openSplattingLayerPanel(app: GeoLibreAppAPI): void {
   void openStandaloneSplattingControl(app);
 }

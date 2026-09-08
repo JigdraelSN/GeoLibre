@@ -23,6 +23,7 @@ import {
   openFlatGeobufAddVectorLayerPanel,
   openDuckDBLayerPanel,
   openLidarLayerPanel,
+  closeLidarLayerPanel,
   openPlanetaryComputerPanel,
   openPMTilesLayerPanel,
   openRasterLayerPanel,
@@ -1208,6 +1209,30 @@ export function TopToolbar({
   // `.current` lazily, so memoizing on the ref keeps a single appApi identity
   // across renders without going stale.
   const appApi = useMemo(() => createAppAPI(mapControllerRef), [mapControllerRef]);
+
+  // MTH: same-origin host bridge for the LiDAR panel.
+  //
+  // The wrapper at /app/ frames this viewer and needs to open and close the
+  // LiDAR panel from its own chrome so users can switch the point cloud's
+  // colouring (elevation / RGB / intensity). The panel belongs to
+  // `maplibre-gl-lidar`, whose markup is not a stable interface — driving it by
+  // selector from the host broke on the sidebar rail, on resize, and on the
+  // project-restore path. Expose the two supported entry points instead.
+  //
+  // Same-origin only: a cross-origin embedder cannot reach this, and should use
+  // the postMessage embed API. Deliberately narrow — nothing else is exposed.
+  useEffect(() => {
+    const host = window as typeof window & {
+      geolibreLidarPanel?: (open: boolean) => void;
+    };
+    host.geolibreLidarPanel = (open: boolean) => {
+      if (open) openLidarLayerPanel(appApi);
+      else closeLidarLayerPanel();
+    };
+    return () => {
+      delete host.geolibreLidarPanel;
+    };
+  }, [appApi]);
 
   const panels = useToolbarPanels(appApi);
   // Fill in the geometry kind for vector-tile layers that arrived without it
