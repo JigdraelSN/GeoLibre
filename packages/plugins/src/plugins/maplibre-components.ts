@@ -6518,11 +6518,48 @@ function shouldUseGenericGeoTiffRenderer(url: string): boolean {
   }
 }
 
+/**
+ * Reentrancy guard: `collapse()` fires the control's "collapse" event, which is
+ * wired back to {@link hideLidarControl} in {@link createLidarControl}.
+ */
+let lidarHideInFlight = false;
+
+/**
+ * `getContainer()` returns only the toggle button; the panel is a separate
+ * element the control appends beside it. Hiding the container alone therefore
+ * leaves an expanded panel on screen anchored to a button that no longer has a
+ * layout box, and the control's `_updatePanelPosition()` positions the panel
+ * from that button's rect:
+ *
+ *   left = buttonRect.left - mapRect.left
+ *   top  = buttonRect.top  - mapRect.top + buttonRect.height + gap
+ *
+ * With the button display:none every term of `buttonRect` is 0, so both come
+ * out negative and the panel renders outside its map container — underneath the
+ * shared sidebar rail and the toolbar. The control is created with
+ * `collapsed: false`, so the restore path (`openStandaloneLidarControl` with
+ * `reveal: false`) hits this on every project load that re-streams a saved
+ * point cloud. Collapse the panel first, then hide the button.
+ */
 function hideLidarControl(control: LidarControl | null): void {
-  const container = control?.getContainer();
+  if (!control) return;
+  if (!lidarHideInFlight) {
+    lidarHideInFlight = true;
+    try {
+      control.collapse();
+    } finally {
+      lidarHideInFlight = false;
+    }
+  }
+  const container = control.getContainer();
   if (container) container.style.display = "none";
 }
 
+/**
+ * Restores the toggle button. Callers that also want the panel open must expand
+ * *after* this returns: the control measures the button to place the panel, so
+ * expanding while it is still hidden reproduces the negative-offset bug above.
+ */
 function showLidarControl(control: LidarControl | null): void {
   const container = control?.getContainer();
   if (container) container.style.display = "";
