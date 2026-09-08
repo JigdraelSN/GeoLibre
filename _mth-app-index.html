@@ -142,8 +142,6 @@
     <button class="tab" role="tab" data-view="upload" aria-selected="false">
       <svg viewBox="0 0 24 24"><path d="M12 16V4m0 0L8 8m4-4 4 4"/><path d="M4 16v3h16v-3"/></svg>Upload</button>
     <div class="spacer"></div>
-    <button class="tog" id="panelbtn" aria-pressed="false" title="Show or hide the GeoLibre data panel">
-      <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M10 4v16"/></svg>Panel</button>
   </nav>
 
   <div class="pane">
@@ -350,50 +348,11 @@ function rebrandViewer(){
     return true;
   }catch{ return false; }
 }
-/* ---- GeoLibre's whole left panel: find, hide, toggle ---------------------
-   Anchored on the dropzone text, walked up to the ancestor that also holds the
-   BROWSER/LAYERS strip. Two safeguards: never accept an ancestor containing a
-   <canvas> (that's the map), and undo immediately if the map stops rendering. */
-let panelShown=false;
-
-/* The LiDAR panel belongs to maplibre-gl-lidar, inside the viewer. Its markup
-   is not a stable interface — a previous version of this file found it by text
-   match and walked its ancestors, which reached the app shell and blanked the
-   viewer, and left the panel mis-positioned under the sidebar rail.
-
-   The fork now exposes window.geolibreLidarPanel(open) on the viewer window
-   (same-origin only). It calls GeoLibre's own openLidarLayerPanel /
-   closeLidarLayerPanel, so positioning, collapse and teardown are the
-   viewer's problem, not ours.                                              */
-function viewerBridge(){
-  try{ return $("#map").contentWindow?.geolibreLidarPanel || null; }
-  catch{ return null; }
-}
-
-function setPanel(show){
-  const bridge=viewerBridge();
-  if(!bridge) return false;
-  try{ bridge(show); return true; }catch{ return false; }
-}
-
-function syncPanelButton(){
-  $("#panelbtn").setAttribute("aria-pressed",String(panelShown));
-}
-
-/* The bridge is installed when the viewer's React tree mounts, which is after
-   the iframe load event. Poll briefly rather than racing it. */
-function autoHidePanel(){
-  let n=0;
-  const t=setInterval(()=>{
-    if(setPanel(panelShown) || ++n>40) clearInterval(t);
-  },250);
-}
-
-$("#panelbtn").onclick=()=>{
-  const want=!panelShown;
-  if(!setPanel(want)){ toast("Viewer is still loading"); return; }
-  panelShown=want; syncPanelButton();
-};
+/* The LiDAR panel is toggled inside the viewer now: the fork keeps the
+   control's own button on the map (eye icon, beside the other map controls)
+   and the panel starts collapsed. Nothing here reaches into the iframe for
+   it — window.geolibreLidarPanel(open) stays available on the viewer window
+   if this page ever needs to drive it again.                               */
 
 function watchAndRebrand(){let n=0;const t=setInterval(()=>{if(rebrandViewer()||++n>40)clearInterval(t);},250);}
 async function ensureApi(){
@@ -402,14 +361,14 @@ async function ensureApi(){
     const mod=await import("https://cdn.jsdelivr.net/npm/@geolibre/embed/+esm");
     api=await mod.connect($("#map"),{origin:cfg.viewerOrigin,timeoutMs:20000});
     $("#mode").textContent="live"; $("#mode").style.color="var(--navy)";
-    api.on?.("projectLoaded",()=>{ renderLayers(); watchAndRebrand(); autoHidePanel(); });
+    api.on?.("projectLoaded",()=>{ renderLayers(); watchAndRebrand(); });
   }catch{
     api=null; $("#mode").textContent="basic";
     $("#mode").title="Embed API unavailable — switching projects reloads the map";
   }
 }
 $("#map").addEventListener("load",async()=>{
-  watchAndRebrand(); autoHidePanel();
+  watchAndRebrand();
   await ensureApi();
   renderLayers();
 });
