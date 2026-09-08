@@ -164,7 +164,12 @@ const PGLITE_CDN = process.env.GEOLIBRE_PGLITE_CDN !== "0";
 // scope. This is deliberately independent of PGLITE_CDN: the web build CDN-loads
 // PGlite yet still ships a service worker.
 const IS_EMBED = process.env.GEOLIBRE_EMBED === "1";
-const PWA_DISABLED = IS_TAURI_BUILD || IS_EMBED;
+// MTH self-hosted deploy: GeoLibre is served at `/` alongside a sibling wrapper
+// app at `/app/`, and a root-scoped service worker intercepts that sibling path
+// and serves GeoLibre's cached shell for it. Opt out of the PWA without taking
+// the rest of the embed build's behaviour changes (`__GEOLIBRE_EMBED_BUILD__`).
+const PWA_DISABLED =
+  IS_TAURI_BUILD || IS_EMBED || process.env.GEOLIBRE_DISABLE_PWA === "1";
 
 // ---------------------------------------------------------------------------
 // Build-time env exposed to the bundle.
