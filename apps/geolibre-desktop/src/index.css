@@ -4527,3 +4527,48 @@ html.dark .maplibregl-popup-anchor-right:has(.vector-control-popup) .maplibregl-
   color: hsl(var(--primary));
   font-weight: 600;
 }
+
+/* ---------------------------------------------------------------------------
+   MT Højgaard palette.
+
+   The stock chrome is a deliberately desaturated blue-grey (see the note beside
+   --secondary in @geolibre/ui's globals.css: neutrals sit at ~16% saturation so
+   the UI reads grey next to the map). Against MTH navy that reads as two
+   unrelated colour families side by side — a navy rail beside grey chrome — and
+   the logo in the toolbar loses its footing.
+
+   So: --primary becomes the brand navy, and the neutrals keep their lightness
+   but move onto the navy's hue with enough saturation to read as the same
+   family. Surfaces stay pure white, which is what gives the navy logo its
+   contrast. Lightness values are unchanged from stock, so every contrast ratio
+   the upstream comments were protecting still holds.
+
+   #0d3068 = hsl(216.9, 77.8%, 22.9%). Rounded to 217 78% 23%.
+
+   Placed in the app stylesheet rather than the shared package so it overrides
+   :root without editing @geolibre/ui, and rebases cleanly onto upstream. The
+   [data-theme] accent themes still work — picking one swaps --primary back.
+   -------------------------------------------------------------------------- */
+@layer base {
+  :root {
+    --primary: 217 78% 23%;
+    --primary-foreground: 0 0% 100%;
+    --ring: 217 78% 23%;
+
+    /* Same lightness as stock, hue pulled onto the navy, saturation raised from
+       16% so the chrome belongs to the logo rather than sitting beside it. */
+    --secondary: 217 30% 96%;
+    --muted: 217 30% 96%;
+    --accent: 217 32% 93%;
+    --border: 217 24% 88%;
+    --input: 217 20% 76%;
+  }
+
+  .dark {
+    /* Navy at 23% L is near-black on a dark surface. Lift it to a lighter tint
+       of the same hue so it still reads as the brand while staying legible. */
+    --primary: 217 62% 62%;
+    --primary-foreground: 217 60% 12%;
+    --ring: 217 62% 62%;
+  }
+}
