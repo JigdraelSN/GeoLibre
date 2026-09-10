@@ -30,6 +30,7 @@ from sqlalchemy import (
     delete,
     event,
     func,
+    or_,
     select,
     update,
 )
@@ -45,6 +46,11 @@ from sqlalchemy.orm import (
 )
 
 Visibility = Literal["public", "unlisted", "private"]
+# "member" can open and save new content on a private project it does not own;
+# "guest" can only open one -- see `can_edit`/`visible`. Both are independent of
+# `Project.owner_id`, which always keeps full (including membership-management)
+# access regardless of what row, if any, exists for the owner here.
+MemberRole = Literal["member", "guest"]
 # 3-39 chars, starting and ending alphanumeric. The middle group is *not*
 # optional: making it so would let a single character through, which contradicts
 # both the error text and the limits table in docs/server-api.md.
@@ -99,6 +105,38 @@ class Project(Base):
     versions: Mapped[list[Version]] = relationship(
         back_populates="project", cascade="all, delete-orphan", order_by="Version.number"
     )
+
+
+class ProjectMember(Base):
+    """Grants one account access to one private project it does not own.
+
+    A guest row is created together with a fresh, username-less `Account` by
+    the guest-link flow (`POST .../guest-links`) rather than by inviting an
+    existing user -- that is how "give this contractor a week of access with no
+    signup" is served. A member row instead points at an existing account
+    (added by username via `POST .../members`), for people who already have a
+    login and should see this project every time they sign in.
+
+    `expires_at` is `None` for an ordinary member (access lasts until removed)
+    and normally set for a guest; either can carry it, since nothing here stops
+    a member's access from also being time-boxed. Expiry is enforced by
+    `is_expired`, called from every access check (`visible`, `can_edit`,
+    `/api/me/projects`) -- there is no background sweep, so an expired row just
+    stops granting access rather than disappearing.
+    """
+
+    __tablename__ = "project_members"
+    __table_args__ = (UniqueConstraint("project_id", "account_id", name="uq_project_member"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    )
+    account_id: Mapped[str] = mapped_column(
+        ForeignKey("accounts.id", ondelete="CASCADE"), index=True
+    )
+    role: Mapped[str] = mapped_column(String(10))
+    expires_at: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[str] = mapped_column(String(32))
 
 
 class Version(Base):
@@ -167,8 +205,36 @@ class ForkRequest(BaseModel):
     visibility: Visibility = "private"
 
 
+class MemberAdd(BaseModel):
+    username: str = Field(max_length=39)
+    role: MemberRole = "member"
+
+
+class GuestLinkCreate(BaseModel):
+    label: str | None = Field(default=None, max_length=100)
+    # Capped at 90 days so a guest link cannot stand in for a real account
+    # indefinitely; the owner can always issue a fresh one.
+    expiresInHours: int = Field(gt=0, le=24 * 90)
+
+
 def now() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+def is_expired(expires_at: str | None) -> bool:
+    """Whether a `ProjectMember.expires_at` (or `None`) has passed.
+
+    `None` never expires. A value that fails to parse is treated as already
+    expired rather than raising or being ignored -- every caller is an access
+    check, and failing closed on a malformed row is the safe direction.
+    """
+    if expires_at is None:
+        return False
+    try:
+        deadline = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    return deadline < datetime.now(UTC)
 
 
 # Activity rows older than this are pruned the next time the project logs an
@@ -541,12 +607,26 @@ def create_app(
             "viewerUrl": viewer_url + "?project=" + quote(raw, safe=""),
         }
 
-    def visible(project: Project | None, account: Account | None) -> Project:
-        if project is None or (
-            project.visibility == "private" and (account is None or project.owner_id != account.id)
-        ):
+    def active_member(
+        session: Session, project_id: str, account_id: str
+    ) -> ProjectMember | None:
+        row = session.scalar(
+            select(ProjectMember).where(
+                ProjectMember.project_id == project_id, ProjectMember.account_id == account_id
+            )
+        )
+        return row if row is not None and not is_expired(row.expires_at) else None
+
+    def visible(project: Project | None, account: Account | None, session: Session) -> Project:
+        if project is None:
             raise HTTPException(404, "project not found")
-        return project
+        if project.visibility != "private":
+            return project
+        if account is not None and (
+            project.owner_id == account.id or active_member(session, project.id, account.id)
+        ):
+            return project
+        raise HTTPException(404, "project not found")
 
     def owned(project: Project | None, account: Account) -> Project:
         if project is None:
@@ -554,6 +634,33 @@ def create_app(
         if project.owner_id != account.id:
             raise HTTPException(403, "project ownership required")
         return project
+
+    def can_edit(project: Project, account: Account | None, session: Session) -> bool:
+        if account is None:
+            return False
+        if project.owner_id == account.id:
+            return True
+        member = active_member(session, project.id, account.id)
+        return member is not None and member.role == "member"
+
+    def editable(project: Project | None, account: Account, session: Session) -> Project:
+        # 404 rather than 403 when the caller cannot even see the project --
+        # matching `visible`, and not confirming a private project's existence
+        # to someone with neither view nor edit access to it.
+        project = visible(project, account, session)
+        if not can_edit(project, account, session):
+            raise HTTPException(403, "edit access required")
+        return project
+
+    def member_json(member: ProjectMember, account: Account) -> dict:
+        return {
+            "id": member.id,
+            "accountId": member.account_id,
+            "username": account.username,
+            "role": member.role,
+            "expiresAt": member.expires_at,
+            "createdAt": member.created_at,
+        }
 
     def create_project(
         session: Session,
@@ -745,13 +852,60 @@ def create_app(
             "total": session.scalar(count),
         }
 
+    @app.get("/api/me/projects")
+    def list_my_projects(
+        limit: Annotated[int, Query(ge=1, le=100)] = 24,
+        offset: Annotated[int, Query(ge=0)] = 0,
+        account: Account = Depends(required_account),
+        session: Session = Depends(db),
+    ):
+        """Every project the caller can open right now: owned, plus every
+        project_members row for them that has not expired -- the listing a
+        signed-in gallery should call instead of `/api/projects`, which only
+        ever shows public projects (or, with `mine=true`, strictly owned ones).
+        """
+        member_ids = {
+            row.project_id
+            for row in session.scalars(
+                select(ProjectMember).where(ProjectMember.account_id == account.id)
+            )
+            if not is_expired(row.expires_at)
+        }
+        condition = Project.owner_id == account.id
+        if member_ids:
+            condition = or_(condition, Project.id.in_(member_ids))
+        projects = session.scalars(
+            select(Project)
+            .where(condition)
+            .options(*LISTING_EAGER_LOADS)
+            .order_by(Project.updated_at.desc())
+            .offset(offset)
+            .limit(limit)
+        ).all()
+        total = session.scalar(select(func.count()).select_from(Project).where(condition))
+        return {
+            "projects": [
+                {
+                    **project_json(p),
+                    "role": "owner"
+                    if p.owner_id == account.id
+                    else active_member(session, p.id, account.id).role,  # type: ignore[union-attr]
+                }
+                for p in projects
+            ],
+            "limit": limit,
+            "offset": offset,
+            "total": total,
+        }
+
     @app.get("/api/projects/{project_id}")
     def get_project(
         project_id: str,
         account: Account | None = Depends(optional_account),
         session: Session = Depends(db),
     ):
-        return {"project": project_json(visible(session.get(Project, project_id), account))}
+        project = visible(session.get(Project, project_id), account, session)
+        return {"project": project_json(project)}
 
     @app.get("/api/projects/{project_id}/activity")
     def get_project_activity(
@@ -778,6 +932,132 @@ def create_app(
         session.execute(delete(ProjectActivity).where(ProjectActivity.project_id == project.id))
         session.commit()
         return Response(status_code=204)
+
+    @app.get("/api/projects/{project_id}/members")
+    def list_members(
+        project_id: str,
+        account: Account = Depends(required_account),
+        session: Session = Depends(db),
+    ):
+        project = owned(session.get(Project, project_id), account)
+        rows = session.scalars(
+            select(ProjectMember)
+            .where(ProjectMember.project_id == project.id)
+            .order_by(ProjectMember.created_at)
+        ).all()
+        accounts = {
+            a.id: a
+            for a in session.scalars(
+                select(Account).where(Account.id.in_([row.account_id for row in rows]))
+            )
+        }
+        return {"members": [member_json(row, accounts[row.account_id]) for row in rows]}
+
+    @app.post("/api/projects/{project_id}/members", status_code=201)
+    def add_member(
+        project_id: str,
+        body: MemberAdd,
+        account: Account = Depends(required_account),
+        session: Session = Depends(db),
+    ):
+        project = owned(session.get(Project, project_id), account)
+        target = session.scalar(select(Account).where(Account.username == body.username.strip()))
+        if target is None:
+            raise HTTPException(404, "no account with that username")
+        if target.id == project.owner_id:
+            raise HTTPException(409, "the owner already has full access")
+        row = session.scalar(
+            select(ProjectMember).where(
+                ProjectMember.project_id == project.id, ProjectMember.account_id == target.id
+            )
+        )
+        if row is None:
+            row = ProjectMember(
+                id=str(uuid.uuid4()),
+                project_id=project.id,
+                account_id=target.id,
+                role=body.role,
+                expires_at=None,
+                created_at=now(),
+            )
+            session.add(row)
+        else:
+            # Re-adding an existing (possibly expired or guest) member resets it
+            # to a standing, non-expiring grant at the requested role rather than
+            # erroring -- "add jane as a member" should work whether or not she
+            # already had guest access that lapsed.
+            row.role = body.role
+            row.expires_at = None
+        session.commit()
+        return {"member": member_json(row, target)}
+
+    @app.delete("/api/projects/{project_id}/members/{account_id}", status_code=204)
+    def remove_member(
+        project_id: str,
+        account_id: str,
+        account: Account = Depends(required_account),
+        session: Session = Depends(db),
+    ):
+        project = owned(session.get(Project, project_id), account)
+        session.execute(
+            delete(ProjectMember).where(
+                ProjectMember.project_id == project.id, ProjectMember.account_id == account_id
+            )
+        )
+        session.commit()
+
+    @app.post("/api/projects/{project_id}/guest-links", status_code=201)
+    def create_guest_link(
+        project_id: str,
+        body: GuestLinkCreate,
+        account: Account = Depends(required_account),
+        session: Session = Depends(db),
+    ):
+        """Mint a standalone, username-less account plus a bearer token for it,
+        good only for this one project and only until it expires. Nothing to
+        sign up for -- handing the returned token to someone lets them call
+        `POST /api/auth/token`-authenticated routes as that guest immediately.
+
+        The token itself does not carry the expiry (`Token` has none -- see
+        `docs/server-api.md`); what expires is the `ProjectMember` row, which
+        `visible`/`can_edit` check on every request. A lapsed guest can still
+        authenticate as *an* account, it just cannot see this (or any other)
+        private project once its membership has expired.
+        """
+        project = owned(session.get(Project, project_id), account)
+        expires_at = (
+            (datetime.now(UTC) + timedelta(hours=body.expiresInHours))
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
+        guest = Account(
+            id=str(uuid.uuid4()),
+            username=None,
+            # Unguessable and never handed back -- a guest authenticates with
+            # the returned bearer token, never a username/password login.
+            password_hash=password_hash(secrets.token_urlsafe(24)),
+            created_at=now(),
+        )
+        session.add(guest)
+        session.add(
+            ProjectMember(
+                id=str(uuid.uuid4()),
+                project_id=project.id,
+                account_id=guest.id,
+                role="guest",
+                expires_at=expires_at,
+                created_at=now(),
+            )
+        )
+        # issue_token() commits; the guest account and membership row above ride
+        # along in that same commit.
+        token = issue_token(session, guest)
+        return {
+            "guestAccountId": guest.id,
+            "label": body.label,
+            "token": token,
+            "expiresAt": expires_at,
+        }
 
     @app.patch("/api/projects/{project_id}")
     def patch_project(
@@ -827,7 +1107,7 @@ def create_app(
         account: Account = Depends(required_account),
         session: Session = Depends(db),
     ):
-        project = owned(session.get(Project, project_id), account)
+        project = editable(session.get(Project, project_id), account, session)
         parse_content(body.content, max_project_bytes)
         # Allocated from max(number) and committed *before* the object is
         # written. Deriving it from len(project.versions) let two concurrent
@@ -852,7 +1132,7 @@ def create_app(
             except (IntegrityError, OperationalError):
                 # See create_project: a SQLite lock is transient and retryable.
                 session.rollback()
-                project = owned(session.get(Project, project_id), account)
+                project = editable(session.get(Project, project_id), account, session)
         else:
             raise HTTPException(409, "could not allocate a version number; retry")
         object_storage.put(key, body.content.encode(), "application/json")
@@ -885,7 +1165,7 @@ def create_app(
         account: Account = Depends(required_account),
         session: Session = Depends(db),
     ):
-        source = visible(session.get(Project, project_id), account)
+        source = visible(session.get(Project, project_id), account, session)
         content = object_storage.get(source.versions[-1].object_key).decode()
         fork = create_project(
             session,
@@ -927,7 +1207,7 @@ def create_app(
         account: Account | None = Depends(optional_account),
         session: Session = Depends(db),
     ):
-        project = visible(session.get(Project, project_id), account)
+        project = visible(session.get(Project, project_id), account, session)
         version = session.get(Version, (project_id, number))
         if version is None:
             raise HTTPException(404, "project version not found")
@@ -971,7 +1251,7 @@ def create_app(
         account: Account | None = Depends(optional_account),
         session: Session = Depends(db),
     ):
-        project = visible(session.get(Project, project_id), account)
+        project = visible(session.get(Project, project_id), account, session)
         if not project.thumbnail_type:
             raise HTTPException(404, "thumbnail not found")
         try:
@@ -1003,7 +1283,7 @@ def create_app(
         project = session.scalar(
             select(Project).join(Account).where(Account.username == username, Project.slug == slug)
         )
-        project = visible(project, account)
+        project = visible(project, account, session)
         # Read the object first: a missing object is a 404 that should not count
         # as a view. Incremented in SQL so concurrent reads do not lose counts.
         body = raw_response(project, project.versions[-1], False)
@@ -1030,7 +1310,7 @@ def create_app(
         project = session.scalar(
             select(Project).join(Account).where(Account.username == username, Project.slug == slug)
         )
-        project = visible(project, account)
+        project = visible(project, account, session)
         log_project_activity(session, project.id, account.id if account else None, "open")
         session.commit()
         raw = f"{base_url}/{quote(username)}/{quote(slug)}.geolibre.json"

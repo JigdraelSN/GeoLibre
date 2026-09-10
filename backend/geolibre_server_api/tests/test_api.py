@@ -327,6 +327,102 @@ def test_activity_log_aggregates_anonymous_opens_and_is_owner_only(client):
     }
 
 
+def test_project_membership_grants_scoped_access(client):
+    owner = account(client)
+    member = account(client, "grace")
+    guest_viewer = account(client, "bob")
+    stranger = account(client, "eve")
+    project, _ = create_project(client, owner, "private")
+    project_id = project["id"]
+
+    # Nobody but the owner can see it yet.
+    for token in (member, guest_viewer, stranger):
+        assert client.get(f"/api/projects/{project_id}", headers=auth(token)).status_code == 404
+    assert client.get(f"/api/projects/{project_id}").status_code == 404
+
+    # Only the owner may manage membership.
+    add = client.post(
+        f"/api/projects/{project_id}/members",
+        headers=auth(member),
+        json={"username": "grace", "role": "member"},
+    )
+    assert add.status_code == 403
+
+    add = client.post(
+        f"/api/projects/{project_id}/members",
+        headers=auth(owner),
+        json={"username": "grace", "role": "member"},
+    )
+    assert add.status_code == 201
+    body = add.json()["member"]
+    assert body["username"] == "grace" and body["role"] == "member" and body["expiresAt"] is None
+
+    # A member can see it, edit it, but not administer it.
+    assert client.get(f"/api/projects/{project_id}", headers=auth(member)).status_code == 200
+    save = client.put(
+        f"/api/projects/{project_id}/content",
+        headers=auth(member),
+        json={"content": '{"version":"1.0","title":"Edited by member"}'},
+    )
+    assert save.status_code == 201
+    denied = client.patch(f"/api/projects/{project_id}", headers=auth(member), json={})
+    assert denied.status_code == 403
+    assert (
+        client.post(
+            f"/api/projects/{project_id}/members", headers=auth(member), json={"username": "bob"}
+        ).status_code
+        == 403
+    )
+
+    # A guest link works like a normal Bearer token, scoped read-only to this
+    # one project, with no signup step.
+    link = client.post(
+        f"/api/projects/{project_id}/guest-links",
+        headers=auth(owner),
+        json={"label": "site visit", "expiresInHours": 1},
+    )
+    assert link.status_code == 201
+    guest_token = link.json()["token"]
+    assert client.get(f"/api/projects/{project_id}", headers=auth(guest_token)).status_code == 200
+    assert (
+        client.put(
+            f"/api/projects/{project_id}/content",
+            headers=auth(guest_token),
+            json={"content": '{"version":"1.0","title":"Should not save"}'},
+        ).status_code
+        == 403
+    )
+    # A stranger and a plain logged-in account without any grant still see nothing.
+    assert client.get(f"/api/projects/{project_id}", headers=auth(stranger)).status_code == 404
+    assert client.get(f"/api/projects/{project_id}", headers=auth(guest_viewer)).status_code == 404
+
+    # /api/me/projects lists exactly what each identity can open, with its role.
+    mine = client.get("/api/me/projects", headers=auth(member)).json()["projects"]
+    assert len(mine) == 1 and mine[0]["id"] == project_id and mine[0]["role"] == "member"
+    assert client.get("/api/me/projects", headers=auth(stranger)).json()["projects"] == []
+
+    # An expired guest grant stops working even though the token itself is
+    # still a valid, authenticated account -- membership expiry is what's
+    # enforced, not the token.
+    with client.app.state.engine.begin() as connection:
+        connection.exec_driver_sql(
+            "update project_members set expires_at = '2000-01-01T00:00:00Z' "
+            "where project_id = :pid and role = 'guest'",
+            {"pid": project_id},
+        )
+    assert client.get(f"/api/projects/{project_id}", headers=auth(guest_token)).status_code == 404
+    assert client.get("/api/account", headers=auth(guest_token)).status_code == 200
+
+    # Removing a member revokes access immediately.
+    assert (
+        client.delete(
+            f"/api/projects/{project_id}/members/{body['accountId']}", headers=auth(owner)
+        ).status_code
+        == 204
+    )
+    assert client.get(f"/api/projects/{project_id}", headers=auth(member)).status_code == 404
+
+
 def test_anonymous_bucket_insert_race_falls_back_to_increment(client):
     from geolibre_server_api.main import ProjectActivity, log_project_activity
     from sqlalchemy import select

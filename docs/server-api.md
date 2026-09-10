@@ -38,6 +38,10 @@ supply them:
   and by username.
 - **Token expiry.** `401` covers an expired token, but tokens issued here do not
   carry an expiry and stay valid until `DELETE /api/auth/token` revokes them.
+  This applies to guest-link tokens too: what expires on schedule is the
+  [membership](#project-membership) row, not the token itself, so an expired
+  guest can still authenticate as *an* account (`GET /api/account` succeeds)
+  even though every project it no longer has access to answers `404`.
 - **A request-size limit.** The server rejects an oversized *declared*
   `Content-Length` before reading the body, but a chunked or HTTP/2 request
   declares no length and is parsed in full before the per-route limit applies.
@@ -68,8 +72,11 @@ Servers may configure a smaller upload limit, but must return `413` and an
 - `public`: discoverable in the public listing and readable without auth.
 - `unlisted`: omitted from public listings, but readable by anyone holding its
   URL. It appears in the owner's authenticated listing.
-- `private`: readable and mutable only by its owner. Raw and thumbnail URLs
-  require the same Bearer token as the metadata endpoint.
+- `private`: readable and mutable only by its owner, plus anyone with an
+  active [membership](#project-membership) on it. A `member` may read and save
+  new content; a `guest` may only read. Raw and thumbnail URLs require the
+  same Bearer token as the metadata endpoint, and are subject to the same
+  membership check.
 
 Changing visibility affects every version immediately. A raw URL is therefore
 not a capability URL for a private project.
@@ -201,6 +208,21 @@ Query parameters:
 Only public projects are returned unless `mine=true` is set. An Authorization
 header does not broaden a public listing by itself. Invalid pagination is `422`.
 
+### `GET /api/me/projects`
+
+Requires auth. Returns every project the caller can currently open: those they
+own, plus any private project where they hold an active (unexpired)
+[membership](#project-membership) — the listing a signed-in gallery should
+call so a member or guest sees exactly, and only, what they have been given
+access to.
+
+```json
+{"projects": [{"...": "...", "role": "owner"}], "limit": 24, "offset": 0, "total": 1}
+```
+
+Each entry is the normal project representation plus a `role` field:
+`"owner"`, `"member"`, or `"guest"`.
+
 ### `GET /api/users/{username}/projects`
 
 Returns `{"projects": [...]}` owned by `{username}`, in newest-updated-first
@@ -291,6 +313,86 @@ must not count failed or unauthorized reads.
 `PUT /api/projects/{id}/thumbnail` requires ownership and accepts the image
 bytes with their image content type. `GET /api/projects/{id}/thumbnail` follows
 project visibility. `DELETE` removes it. Upload and delete responses are `204`.
+
+## Project membership
+
+Ownership (one account per project, set at creation) is unaffected by
+everything below — an owner always has full access, including managing
+membership, whether or not a `ProjectMember`-equivalent row exists for it.
+Membership is how a **private** project is opened by someone other than its
+owner:
+
+- `member`: can read the project and save new content on it (`PUT
+  .../content`), but cannot change its metadata, visibility, thumbnail, or
+  membership — those stay owner-only.
+- `guest`: can read the project only. Meant for temporary/external access —
+  see `POST .../guest-links`.
+
+Either role may carry an expiry. A member is normally added without one
+(access lasts until removed); a guest link always sets one. An expired row
+stops granting access on its next check — there is no background sweep, and
+nothing else about the account is affected.
+
+### `GET /api/projects/{id}/members`
+
+Requires ownership.
+
+```json
+{"members": [
+  {"id": "…", "accountId": "…", "username": "grace", "role": "member", "expiresAt": null, "createdAt": "…"}
+]}
+```
+
+A guest added through a guest link has `"username": null` — it is a
+username-less account created solely to hold that grant.
+
+### `POST /api/projects/{id}/members`
+
+Requires ownership. Grants an **existing** account standing (non-expiring)
+access by username:
+
+```json
+{"username": "grace", "role": "member"}
+```
+
+`role` is `"member"` or `"guest"` (default `"member"`). Response `201`:
+`{"member": <member>}`. `404` if no account has that username; `409` if it is
+the project's owner (who already has full access). Calling this again for an
+account that already has a row resets it to a standing grant at the given
+role — this is how a lapsed guest is turned into a regular member, or how any
+row is cleared back to non-expiring.
+
+### `DELETE /api/projects/{id}/members/{accountId}`
+
+Requires ownership. Revokes that account's access to this project immediately.
+Response: `204`.
+
+### `POST /api/projects/{id}/guest-links`
+
+Requires ownership. Creates a brand-new, username-less account together with a
+`guest` membership on this project, and returns a Bearer token for it — no
+sign-up step for the recipient, and access is scoped to this one project and
+this one expiry:
+
+```json
+{"label": "site visit", "expiresInHours": 24}
+```
+
+`expiresInHours` is required (1–2160, i.e. up to 90 days). `label` is optional,
+stored nowhere server-side today — it is only echoed back in the response for
+the caller's own bookkeeping. Response `201`:
+
+```json
+{"guestAccountId": "uuid", "label": "site visit", "token": "secret-token", "expiresAt": "2026-08-04T12:00:00Z"}
+```
+
+Hand `token` to the guest directly (there is no separate guest login flow —
+it is used exactly like any other Bearer token). Once `expiresAt` passes, the
+guest's membership stops granting access to this project; the token itself
+does not expire (see [Token expiry](#what-the-reference-server-leaves-to-the-operator)),
+so `GET /api/account` still succeeds for it, but every private-project route
+gated on visibility or edit access answers `404`/`403` as if the account were
+a stranger.
 
 ## Compatibility
 
