@@ -19,6 +19,8 @@ import {
   Search,
   Star,
   User,
+  UserCog,
+  Users,
 } from "lucide-react";
 import {
   useCallback,
@@ -29,9 +31,15 @@ import {
   type ReactNode,
 } from "react";
 import { useTranslation } from "react-i18next";
+import { useAuthStore } from "../../hooks/useAuthStore";
 import { useDesktopSettingsStore } from "../../hooks/useDesktopSettings";
 import { observeGalleryEnd } from "../../lib/gallery-auto-load";
 import { openExternalLink } from "../../lib/open-external";
+import {
+  fetchAssignedProjects,
+  ServerApiError,
+  type MembershipRole,
+} from "../../lib/server-api-auth";
 import {
   fetchMyProjects,
   fetchSharedProjects,
@@ -40,9 +48,13 @@ import {
   type SharedProject,
 } from "../../lib/share-gallery";
 import { shareHostLabel } from "../../lib/share-geolibre";
+import { ProjectMembersDialog } from "./ProjectMembersDialog";
 import type { TFunction } from "i18next";
 
-type GalleryScope = "featured" | "all" | "mine";
+type GalleryScope = "featured" | "all" | "mine" | "assigned";
+
+/** A listed project, with the caller's role attached when it came from the "assigned" scope. */
+type GalleryProject = SharedProject & { role?: MembershipRole };
 
 interface ProjectGalleryDialogProps {
   open: boolean;
@@ -92,6 +104,32 @@ function galleryErrorMessage(error: unknown, t: TFunction): string {
         return t("gallery.errorHttp", { status: error.status ?? 0 });
     }
   }
+  // The "assigned" scope goes through server-api-auth.ts instead, which throws
+  // its own coded error type rather than GalleryError.
+  if (error instanceof ServerApiError) {
+    switch (error.code) {
+      case "timeout":
+        return t("gallery.errorTimeout");
+      case "network":
+        return t("gallery.errorNetwork", { shareHost: shareHostLabel() });
+      case "invalid-response":
+        return t("gallery.errorInvalidResponse");
+      case "unauthorized":
+        return t("gallery.errorUnauthorized", { shareHost: shareHostLabel() });
+      case "not-configured":
+        return t("gallery.errorNotConfigured");
+      case "invalid-credentials":
+        return t("gallery.errorInvalidCredentials");
+      case "forbidden":
+        return t("gallery.errorForbidden");
+      case "not-found":
+        return t("gallery.errorNotFound");
+      case "conflict":
+        return t("gallery.errorConflict");
+      case "http":
+        return t("gallery.errorHttp", { status: error.status ?? 0 });
+    }
+  }
   return error instanceof Error ? error.message : t("gallery.errorFallback");
 }
 
@@ -111,8 +149,10 @@ export function ProjectGalleryDialog({
   const { t } = useTranslation();
   const trimmedToken = (useDesktopSettingsStore((s) => s.desktopSettings.shareToken) ?? "").trim();
   const hasToken = trimmedToken.length > 0;
+  const authToken = useAuthStore((s) => s.token);
+  const hasAuthToken = !!authToken;
   const [scope, setScope] = useState<GalleryScope>("featured");
-  const [projects, setProjects] = useState<SharedProject[]>([]);
+  const [projects, setProjects] = useState<GalleryProject[]>([]);
   const [status, setStatus] = useState<"idle" | "loading" | "loadingMore">("idle");
   const [error, setError] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(false);
@@ -125,14 +165,20 @@ export function ProjectGalleryDialog({
     null,
   );
   const [openError, setOpenError] = useState<string | null>(null);
+  const [manageMembersProject, setManageMembersProject] = useState<{
+    id: string;
+    title: string;
+  } | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const reloadGenerationRef = useRef(0);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const loadMoreSentinelRef = useRef<HTMLDivElement>(null);
 
-  // Without a token, the "My projects" scope isn't available; fall back to the
-  // featured tab.
-  const effectiveScope: GalleryScope = scope === "mine" && !hasToken ? "featured" : scope;
+  // Without a share token, the "My projects" scope isn't available; without a
+  // signed-in session, neither is "Assigned to me". Fall back to the featured
+  // tab in either case.
+  const effectiveScope: GalleryScope =
+    (scope === "mine" && !hasToken) || (scope === "assigned" && !hasAuthToken) ? "featured" : scope;
 
   // Explicit dialog size once the user drags the corner grip (null = the
   // default responsive size). `dialogRef` reads the live element size at the
@@ -218,6 +264,24 @@ export function ProjectGalleryDialog({
           if (controller.signal.aborted) return;
           setProjects(mine);
           setHasMore(false);
+        } else if (effectiveScope === "assigned") {
+          // "Assigned to me" lists everything the signed-in account owns or has
+          // been granted membership on (GET /api/me/projects), paginated by
+          // limit/offset like "featured"/"all".
+          const result = await fetchAssignedProjects({
+            token: authToken ?? "",
+            limit: PAGE_SIZE,
+            offset,
+            signal: controller.signal,
+          });
+          if (controller.signal.aborted) return;
+          setProjects((prev) => (offset === 0 ? result.projects : [...prev, ...result.projects]));
+          setHasMore(result.offset + result.projects.length < result.total);
+          // Advance by the requested page size, not the filtered count: the
+          // offset is a request into the server's raw ordering, and the next
+          // request should continue right after this page regardless of any
+          // client-side normalization drops.
+          setRawOffset(offset + PAGE_SIZE);
         } else {
           // "featured" and "all" both page through the public listing; featured
           // adds the ?featured=true filter.
@@ -244,7 +308,7 @@ export function ProjectGalleryDialog({
         if (!controller.signal.aborted) setStatus("idle");
       }
     },
-    [t, effectiveScope, trimmedToken],
+    [t, effectiveScope, trimmedToken, authToken],
   );
 
   // Reload from the first page when the dialog opens or the scope changes (the
@@ -273,7 +337,11 @@ export function ProjectGalleryDialog({
     try {
       await onOpenProject(
         project.rawJsonUrl,
-        effectiveScope === "mine" ? projectOpenToken(project, trimmedToken) : undefined,
+        effectiveScope === "mine"
+          ? projectOpenToken(project, trimmedToken)
+          : effectiveScope === "assigned"
+            ? (authToken ?? undefined)
+            : undefined,
         options,
       );
       onOpenChange(false);
@@ -314,7 +382,8 @@ export function ProjectGalleryDialog({
   const showEmpty = status !== "loading" && !error && visibleProjects.length === 0;
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <>
+      <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         ref={dialogRef}
         className="max-h-[85vh] max-w-4xl"
@@ -374,6 +443,14 @@ export function ProjectGalleryDialog({
               onClick={() => setScope("mine")}
               icon={<User className="h-3.5 w-3.5" />}
               label={t("gallery.scopeMine")}
+            />
+          ) : null}
+          {hasAuthToken ? (
+            <ScopeTab
+              active={effectiveScope === "assigned"}
+              onClick={() => setScope("assigned")}
+              icon={<Users className="h-3.5 w-3.5" />}
+              label={t("gallery.scopeAssigned")}
             />
           ) : null}
         </div>
@@ -436,9 +513,11 @@ export function ProjectGalleryDialog({
                     ? t("gallery.noMatches")
                     : effectiveScope === "mine"
                       ? t("gallery.emptyMine")
-                      : effectiveScope === "featured"
-                        ? t("gallery.emptyFeatured")
-                        : t("gallery.empty")}
+                      : effectiveScope === "assigned"
+                        ? t("gallery.emptyAssigned")
+                        : effectiveScope === "featured"
+                          ? t("gallery.emptyFeatured")
+                          : t("gallery.empty")}
                 </p>
               ) : (
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -450,6 +529,15 @@ export function ProjectGalleryDialog({
                       disabled={openingState !== null}
                       onOpen={() => void handleOpen(project)}
                       onOpenCopy={() => void handleOpen(project, { asCopy: true })}
+                      onManageMembers={
+                        project.role === "owner"
+                          ? () =>
+                              setManageMembersProject({
+                                id: project.id,
+                                title: project.title || t("gallery.untitled"),
+                              })
+                          : undefined
+                      }
                     />
                   ))}
                 </div>
@@ -481,7 +569,17 @@ export function ProjectGalleryDialog({
           )}
         </div>
       </DialogContent>
-    </Dialog>
+      </Dialog>
+
+      <ProjectMembersDialog
+        open={manageMembersProject !== null}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen) setManageMembersProject(null);
+        }}
+        projectId={manageMembersProject?.id ?? ""}
+        projectTitle={manageMembersProject?.title ?? ""}
+      />
+    </>
   );
 }
 
@@ -526,15 +624,38 @@ function VisibilityBadge({ visibility }: { visibility: string }) {
   );
 }
 
+/** A small badge showing the caller's role on a project from the "assigned" scope. */
+function RoleBadge({ role }: { role: MembershipRole }) {
+  const { t } = useTranslation();
+  return (
+    <span className="absolute end-1.5 top-1.5 flex items-center gap-1 rounded bg-background/85 px-1.5 py-0.5 text-[10px] font-medium text-foreground shadow-sm">
+      {role === "owner"
+        ? t("gallery.roleOwner")
+        : role === "guest"
+          ? t("gallery.roleGuest")
+          : t("gallery.roleMember")}
+    </span>
+  );
+}
+
 interface GalleryCardProps {
-  project: SharedProject;
+  project: GalleryProject;
   openingAction: "open" | "copy" | null;
   disabled: boolean;
   onOpen: () => void;
   onOpenCopy: () => void;
+  /** Set only for projects the signed-in account owns; renders a "Manage members" action. */
+  onManageMembers?: () => void;
 }
 
-function GalleryCard({ project, openingAction, disabled, onOpen, onOpenCopy }: GalleryCardProps) {
+function GalleryCard({
+  project,
+  openingAction,
+  disabled,
+  onOpen,
+  onOpenCopy,
+  onManageMembers,
+}: GalleryCardProps) {
   const { t } = useTranslation();
   const [thumbBroken, setThumbBroken] = useState(false);
 
@@ -567,6 +688,7 @@ function GalleryCard({ project, openingAction, disabled, onOpen, onOpenCopy }: G
           </span>
         ) : null}
         <VisibilityBadge visibility={project.visibility} />
+        {project.role ? <RoleBadge role={project.role} /> : null}
       </button>
 
       <div className="flex flex-1 flex-col gap-1 p-3">
@@ -619,6 +741,17 @@ function GalleryCard({ project, openingAction, disabled, onOpen, onOpenCopy }: G
               onClick={() => void openExternalLink(project.projectUrl)}
             >
               <ExternalLink className="h-4 w-4" />
+            </Button>
+          ) : null}
+          {onManageMembers ? (
+            <Button
+              size="sm"
+              variant="outline"
+              aria-label={t("gallery.manageMembers")}
+              title={t("gallery.manageMembers")}
+              onClick={onManageMembers}
+            >
+              <UserCog className="h-4 w-4" />
             </Button>
           ) : null}
         </div>

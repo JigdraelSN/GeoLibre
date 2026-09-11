@@ -31,3 +31,12 @@ export const UPDATE_LAST_CHECK_STORAGE_KEY = "geolibre.lastUpdateCheck";
  * directory. See `lib/startup-project-snapshot.ts`.
  */
 export const STARTUP_SNAPSHOTS_STORAGE_KEY = "geolibre.startupProjectSnapshots";
+
+/**
+ * Signed-in session for `backend/geolibre_server_api`'s membership system
+ * (account + bearer token) — see `hooks/useAuthStore.ts`. Same "token in
+ * localStorage" trade-off as {@link DESKTOP_SETTINGS_STORAGE_KEY}'s
+ * `shareToken`: short-lived-in-spirit and revocable, not moved to OS secure
+ * storage yet.
+ */
+export const SERVER_AUTH_STORAGE_KEY = "geolibre.serverAuth";

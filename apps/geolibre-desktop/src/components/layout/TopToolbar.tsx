@@ -141,6 +141,7 @@ import { AddNetcdfDialog } from "./AddNetcdfDialog";
 import { AboutDialog } from "./AboutDialog";
 import { NewProjectDialog } from "./NewProjectDialog";
 import { ManagePluginsDialog } from "./ManagePluginsDialog";
+import { AccountMenu } from "./AccountMenu";
 import { ProjectGalleryDialog } from "./ProjectGalleryDialog";
 import { ShareProjectDialog } from "./ShareProjectDialog";
 import { resolveShareHost } from "../../lib/share-geolibre";
@@ -2355,6 +2356,11 @@ export function TopToolbar({
           onToggleThemeMode={onToggleThemeMode}
         />
       ) : null}
+      {/* Sign in to `backend/geolibre_server_api`'s per-project membership
+          system — unlocks the "Assigned to me" gallery scope and per-project
+          member management. Unrelated to (and independent of) the Auth0/Clerk
+          deployment gate that can wall off the whole app above. */}
+      {!viewer ? <AccountMenu chrome={chrome} /> : null}
       {/* No plugin marketplace in the Mac App Store build (all its entry
           points are hidden too; this keeps the install surface out of the
           bundle). */}
