@@ -70,6 +70,8 @@ import { isWindows } from "./lib/is-mobile";
 import { isTauri } from "./lib/is-tauri";
 import { installStaleChunkReload } from "./lib/stale-chunk-reload";
 import { resolveAuthGate, type AuthGateConfig } from "./lib/auth-gate";
+import { resolveMembershipGateEnabled } from "./lib/membership-gate";
+import { projectUrlFromLocation } from "./lib/project-url";
 import { getInitialThemeMode } from "./hooks/useThemeMode";
 import { applyTemporaryDesktopSettings } from "./hooks/useDesktopSettings";
 import {
@@ -162,7 +164,13 @@ const isHostedWebApp = !isTauri() && !__GEOLIBRE_EMBED_BUILD__;
 startAnalytics(isHostedWebApp);
 // Clerk or Auth0, whichever this deployment configured (neither, normally).
 const authGate = resolveAuthGate(isHostedWebApp);
-if (authGate) {
+// This deployment's own membership sign-in (see lib/membership-gate.ts) — a
+// different concept from authGate above: it only intercepts the bare landing
+// page, never a shared project link, so a visitor who arrived with one (see
+// lib/project-url.ts) never needs an account.
+const membershipGateEnabled =
+  resolveMembershipGateEnabled(isHostedWebApp) && !projectUrlFromLocation();
+if (authGate || membershipGateEnabled) {
   // Apply the initial theme now rather than leaving it to <App />. A gate paints
   // a full-screen signed-out page *before* App mounts, and App is where
   // useThemeMode adds the `dark` class — so without this a dark-mode visitor
@@ -197,6 +205,20 @@ function loadAuthGate(
       {children}
     </Auth0Gate>
   ));
+}
+
+/**
+ * Load the membership gate's chunk and return a wrapper for the app tree, the
+ * same shape as {@link loadAuthGate}. Returns null (and downloads nothing)
+ * when the gate isn't enabled for this visit — either the deployment didn't
+ * configure it, or this visitor arrived with a shared project link.
+ */
+function loadMembershipGate(enabled: boolean): Promise<((children: ReactNode) => ReactNode) | null> {
+  if (!enabled) return Promise.resolve(null);
+  return import("./components/auth/MembershipGate").then(
+    ({ MembershipGate }) =>
+      (children: ReactNode) => <MembershipGate>{children}</MembershipGate>,
+  );
 }
 // Register the offline/PWA service worker (web build only). `registerSW` is a
 // no-op stub in the Tauri desktop and embedded Jupyter builds, where the plugin
@@ -277,6 +299,7 @@ void Promise.all([
   import("./App"),
   import("./components/common/error-boundaries"),
   loadAuthGate(authGate),
+  loadMembershipGate(membershipGateEnabled),
   // Sidecar-dependent panels can issue a request as soon as App mounts. On
   // Windows, wait until those requests have the native transport installed.
   nativeSidecarFetchReady,
@@ -287,9 +310,15 @@ void Promise.all([
   // (lazily loaded) catalog, so the UI never paints raw translation keys.
   startupLanguageReady,
 ])
-  .then(([{ default: App }, { AppErrorBoundary }, withAuthGate]) => {
+  .then(([{ default: App }, { AppErrorBoundary }, withAuthGate, withMembershipGate]) => {
     const app = <App />;
-    const authenticatedApp = withAuthGate ? withAuthGate(app) : app;
+    // Membership gate wraps first (innermost around <App/>), so a deployment
+    // that somehow configured both this and Auth0/Clerk would still show its
+    // identity SSO first — the membership gate only ever intercepts the bare
+    // landing page of an already-authorized visitor. Not a combination this
+    // fork configures today, but keeps the composition well-defined either way.
+    const gatedApp = withMembershipGate ? withMembershipGate(app) : app;
+    const authenticatedApp = withAuthGate ? withAuthGate(gatedApp) : gatedApp;
     ReactDOM.createRoot(document.getElementById("root")!).render(
       <React.StrictMode>
         <I18nextProvider i18n={i18n}>
