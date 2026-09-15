@@ -46,19 +46,15 @@ function authErrorMessage(error: unknown, t: TFunction): string {
 }
 
 /**
- * Placeholder wordmark for the MTH brand.
- *
- * TODO(branding): once a logo file lands in `public/branding/`, replace the
- * text below with `<img src="/branding/mth-logo.svg" alt="" className="h-8" />`
- * — nothing else in this file needs to change.
+ * The MTHøjgaard wordmark (`public/branding/mth-logo.png`), on a light plate
+ * so the navy mark stays legible regardless of the app's own theme — the gate
+ * backdrop behind it is dark in both light and dark mode.
  */
 function BrandMark() {
+  const { t } = useTranslation();
   return (
-    <div
-      aria-hidden="true"
-      className="select-none text-2xl font-semibold tracking-[0.3em] text-foreground"
-    >
-      MTH
+    <div className="rounded-md bg-white px-4 py-2.5 shadow-sm">
+      <img src="/branding/mth-logo.png" alt={t("serverAuth.logoAlt")} className="h-6 w-auto" />
     </div>
   );
 }

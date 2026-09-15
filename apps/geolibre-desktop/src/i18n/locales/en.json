@@ -1445,6 +1445,7 @@
     "dialogDescription": "Sign in to {{shareHost}} to see the projects you've been assigned to.",
     "gateTitle": "Sign in to continue",
     "gateDescription": "Sign in with the account your project owner gave you, or paste an access token.",
+    "logoAlt": "MTHøjgaard",
     "modeCredentials": "Username & password",
     "modeToken": "I have a token",
     "usernameLabel": "Username",
