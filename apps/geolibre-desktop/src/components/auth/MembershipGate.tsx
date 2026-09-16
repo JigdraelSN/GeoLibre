@@ -253,17 +253,33 @@ function GateCard() {
  * `projectUrlFromLocation()` check that keeps shared project links working
  * without an account).
  *
- * Renders the branded globe backdrop and sign-in card in place of `children`
- * until a session exists in `useAuthStore`, then renders `children` (App)
- * directly with no wrapper element. `useAuthStore` hydrates synchronously
- * from localStorage at module load (see hooks/useAuthStore.ts), so a
- * returning signed-in visitor never sees this screen flash before the app.
+ * Renders the branded globe backdrop and sign-in card until a session exists
+ * in `useAuthStore`, then hands off to `/app/` — MTHøjgaard's own
+ * project-browser page (a separate static bundle deployed alongside this
+ * app, see the VPS Caddyfile's `handle /app/*` block) — rather than opening
+ * GeoLibre's own empty-project canvas. This gate's job is "is someone signed
+ * in", not "what they should see once they are"; `/app/` is deliberately not
+ * wrapped in its own auth check here, since it was folded into this same
+ * gate rather than kept behind its previous separate Basic Auth login.
+ *
+ * `useAuthStore` hydrates synchronously from localStorage at module load
+ * (see hooks/useAuthStore.ts), so a returning signed-in visitor's very first
+ * render already knows to redirect — there is no flash of the sign-in card
+ * first. `children` (App) still renders as a fallback for the brief instant
+ * before the redirect takes effect, rather than leaving the screen blank.
  */
 export function MembershipGate({ children }: { children: ReactNode }) {
   const account = useAuthStore((s) => s.account);
   const token = useAuthStore((s) => s.token);
+  const authenticated = Boolean(account && token);
 
-  if (account && token) return <>{children}</>;
+  useEffect(() => {
+    if (authenticated) {
+      window.location.replace("/app/");
+    }
+  }, [authenticated]);
+
+  if (authenticated) return <>{children}</>;
 
   return (
     <main className="relative flex min-h-screen items-center justify-center p-6">
