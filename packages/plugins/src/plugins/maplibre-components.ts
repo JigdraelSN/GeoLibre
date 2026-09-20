@@ -119,6 +119,14 @@ import {
  */
 export const LIDAR_SOURCE_KIND = "lidar-url";
 
+/**
+ * `metadata.sourceKind` marking the Gaussian splat / 3D model layers this
+ * plugin adds. Exported for the same reason as {@link LIDAR_SOURCE_KIND}: the
+ * Layer Library's restore dispatch keys off this constant rather than a
+ * hand-typed copy of the string literal.
+ */
+export const SPLATTING_SOURCE_KIND = "splatting-url";
+
 type ControlGridConstructor = (typeof import("maplibre-gl-components"))["ControlGrid"];
 type AddVectorControlConstructor = (typeof import("maplibre-gl-components"))["AddVectorControl"];
 type BookmarkControlConstructor = (typeof import("maplibre-gl-components"))["BookmarkControl"];
@@ -820,6 +828,30 @@ interface PendingLidarRestore {
 }
 const pendingLidarRestores = new Map<string, PendingLidarRestore[]>();
 let lidarRestoreInFlight = false;
+
+// Mirrors PendingLidarRestore/pendingLidarRestores above: loadSplat/loadModel
+// assign a fresh splatId/modelId on every call (including a restore replay),
+// so each entry carries the saved layer's desired state (and, unlike LiDAR,
+// its placement — a splat/model has no bounds of its own to derive a viewport
+// from) for the load handler to reattach to the saved layer id rather than
+// adding a duplicate. Keyed by source URL with a FIFO queue per URL, so two
+// saved layers pointing at the same asset both restore.
+interface PendingSplattingRestore {
+  layerId: string;
+  name: string;
+  visible: boolean;
+  opacity: number;
+  style: GeoLibreLayer["style"];
+  groupId: string | undefined;
+  beforeLayerId: string | null;
+  longitude: number;
+  latitude: number;
+  altitude: number;
+  rotation: [number, number, number];
+  scale: number;
+}
+const pendingSplattingRestores = new Map<string, PendingSplattingRestore[]>();
+let splattingRestoreInFlight = false;
 
 let pluginActive = false;
 let componentsControlRevision = 0;
@@ -3457,12 +3489,21 @@ export async function restoreLidarLayers(app: GeoLibreAppAPI): Promise<void> {
   }
 }
 
-async function openStandaloneSplattingControl(app: GeoLibreAppAPI): Promise<boolean> {
+async function openStandaloneSplattingControl(
+  app: GeoLibreAppAPI,
+  options: { reveal?: boolean } = {},
+): Promise<boolean> {
+  // Mirrors openStandaloneLidarControl's `reveal` option: project restore
+  // mounts the control only to re-attach saved splats/models, so it passes
+  // `reveal: false` to keep the panel out of the user's way; a freshly
+  // created control is hidden so it does not pop open on load.
+  const reveal = options.reveal ?? true;
   const {
     GaussianSplatControl: GaussianSplatControlClass,
     GaussianSplatLayerAdapter: GaussianSplatLayerAdapterClass,
   } = await getComponentsConstructors();
 
+  const created = !splattingControl;
   splattingControl ??= createSplattingControl(
     GaussianSplatControlClass,
     GaussianSplatLayerAdapterClass,
@@ -3478,8 +3519,17 @@ async function openStandaloneSplattingControl(app: GeoLibreAppAPI): Promise<bool
   }
 
   setTimeout(() => {
-    showSplattingControl(splattingControl);
-    splattingControl?.expand();
+    if (reveal) {
+      showSplattingControl(splattingControl);
+      splattingControl?.expand();
+    } else if (created) {
+      // Restore mounts the control to re-attach saved splats/models. Keep
+      // its toggle button on the map (collapsed) rather than hiding the
+      // whole control, so a project that carries a splat always offers a
+      // way to open the styling panel.
+      showSplattingControl(splattingControl);
+      splattingControl?.collapse();
+    }
   }, 0);
   return true;
 }
@@ -4652,6 +4702,10 @@ function teardownLidarControl(app: GeoLibreAppAPI): void {
 }
 
 function teardownSplattingControl(app: GeoLibreAppAPI): void {
+  // Clear restore bookkeeping so a teardown mid-restore (project reload, map
+  // re-init) cannot strand the in-flight guard and block later restores.
+  pendingSplattingRestores.clear();
+  splattingRestoreInFlight = false;
   splattingStoreUnsubscribe?.();
   splattingStoreUnsubscribe = null;
   splattingLayerAdapter?.destroy();
@@ -4743,8 +4797,65 @@ function createSplattingLoadHandler(
     const id = assetType === "splat" ? event.splatId : event.modelId;
     if (!id || !event.url) return;
 
+    // The control's state at load time is the only place placement is
+    // available — capture it here so it can be persisted on the layer.
+    const placement: SplattingPlacement = {
+      longitude: event.state.longitude,
+      latitude: event.state.latitude,
+      altitude: event.state.altitude,
+      rotation: event.state.rotation,
+      scale: event.state.scale,
+    };
+
     const store = useAppStore.getState();
-    const layer = createSplattingStoreLayer(id, event.url, assetType);
+    const layer = createSplattingStoreLayer(id, event.url, assetType, placement);
+
+    // Project restore: this load was triggered to re-attach a saved layer
+    // (see restoreSplattingLayers). loadSplat/loadModel assign a fresh id, so
+    // swap the inert placeholder (saved id) for the loaded layer in place,
+    // carrying over the saved visibility, opacity, style, name, and position
+    // — the placement captured above already matches what was requested,
+    // since restoreSplattingLayers loads with the saved placement.
+    const restoreQueue = pendingSplattingRestores.get(event.url);
+    const restore = restoreQueue?.shift();
+    if (restore) {
+      if (restoreQueue && restoreQueue.length === 0) {
+        pendingSplattingRestores.delete(event.url);
+      }
+      const restored: GeoLibreLayer = {
+        ...layer,
+        name: restore.name || layer.name,
+        visible: restore.visible,
+        opacity: restore.opacity,
+        style: restore.style,
+        ...(restore.groupId ? { groupId: restore.groupId } : {}),
+      };
+      if (
+        restore.layerId !== restored.id &&
+        store.layers.some((item) => item.id === restore.layerId)
+      ) {
+        store.removeLayer(restore.layerId);
+      }
+      const beforeLayerId =
+        restore.beforeLayerId &&
+        useAppStore.getState().layers.some((item) => item.id === restore.beforeLayerId)
+          ? restore.beforeLayerId
+          : null;
+      store.addLayer(restored, beforeLayerId);
+      // Fold the restored group chain too: a saved layer can be `visible:
+      // true` on its own while its (also-restored) parent group is hidden,
+      // and the diffing subscribe elsewhere only reacts to *changes*, so the
+      // initial paint has to get this right itself.
+      const restoredState = effectiveLayerRenderState(restored, useAppStore.getState().layerGroups);
+      if (!restoredState.visible) {
+        splattingLayerAdapter?.setVisibility(restored.id, false);
+      }
+      if (restoredState.opacity !== 1) {
+        splattingLayerAdapter?.setOpacity(restored.id, restoredState.opacity);
+      }
+      return;
+    }
+
     if (store.layers.some((item) => item.id === layer.id)) {
       store.updateLayer(layer.id, {
         metadata: layer.metadata,
@@ -4756,6 +4867,97 @@ function createSplattingLoadHandler(
     }
     store.addLayer(layer);
   };
+}
+
+/** Whether a restore is already queued or in flight for this specific layer. */
+function isSplattingRestorePending(layer: GeoLibreLayer): boolean {
+  for (const queue of pendingSplattingRestores.values()) {
+    if (queue.some((pending) => pending.layerId === layer.id)) return true;
+  }
+  return false;
+}
+
+function splattingLayerUrl(layer: GeoLibreLayer): string | null {
+  if (typeof layer.sourcePath === "string" && layer.sourcePath) {
+    return layer.sourcePath;
+  }
+  const url = (layer.source as { url?: unknown }).url;
+  return typeof url === "string" && url ? url : null;
+}
+
+/**
+ * Re-attach the Gaussian splat / 3D model for any restored `splatting-url`
+ * layers that are not yet loaded into the splat control (e.g. after opening
+ * a saved project). The store only holds the layer metadata, so without
+ * this the layer appears in the Layers panel but renders nothing. The
+ * loaded splat/model is reattached to the saved layer in
+ * {@link createSplattingLoadHandler}, preserving its visibility, opacity,
+ * style, name, and position — as well as its saved placement
+ * (longitude/latitude/altitude/rotation/scale), loaded here from
+ * {@link readSplattingPlacement} since, unlike a point cloud, a splat/model
+ * has no bounds of its own to derive a position from.
+ */
+export async function restoreSplattingLayers(app: GeoLibreAppAPI): Promise<void> {
+  if (splattingRestoreInFlight) return;
+
+  const pending = useAppStore
+    .getState()
+    .layers.filter(
+      (layer) =>
+        isSplattingControlLayer(layer) &&
+        !hasSplattingLayer(layer.id) &&
+        !isSplattingRestorePending(layer),
+    );
+  if (pending.length === 0) return;
+
+  splattingRestoreInFlight = true;
+  try {
+    const opened = await openStandaloneSplattingControl(app, { reveal: false });
+    if (!opened || !splattingControl) return;
+    const control = splattingControl;
+
+    for (const layer of pending) {
+      const url = splattingLayerUrl(layer);
+      if (!url) continue;
+      // Re-check against the live store: a layer may have been removed,
+      // already loaded, or queued while the control was loading async.
+      const current = useAppStore.getState().layers;
+      const index = current.findIndex((item) => item.id === layer.id);
+      if (index === -1) continue;
+      if (hasSplattingLayer(layer.id) || isSplattingRestorePending(layer)) continue;
+
+      const placement = readSplattingPlacement(layer);
+      const entry: PendingSplattingRestore = {
+        layerId: layer.id,
+        name: layer.name,
+        visible: layer.visible,
+        opacity: layer.opacity,
+        style: layer.style,
+        groupId: layer.groupId,
+        beforeLayerId: current[index + 1]?.id ?? null,
+        ...placement,
+      };
+      const queue = pendingSplattingRestores.get(url);
+      if (queue) queue.push(entry);
+      else pendingSplattingRestores.set(url, [entry]);
+
+      const assetType = layer.metadata.assetType === "model" ? "model" : "splat";
+      const load = assetType === "model" ? control.loadModel(url, placement) : control.loadSplat(url, placement);
+      load.catch((error: unknown) => {
+        // Drop only this layer's entry so a sibling restore for the same URL
+        // is not lost; clean up the map key once its queue empties.
+        const remaining = pendingSplattingRestores.get(url);
+        if (remaining) {
+          const at = remaining.indexOf(entry);
+          if (at !== -1) remaining.splice(at, 1);
+          if (remaining.length === 0) pendingSplattingRestores.delete(url);
+        }
+        console.warn("[splatting] failed to restore layer", url, error);
+      });
+    }
+  } finally {
+    splattingRestoreInFlight = false;
+  }
 }
 
 function createSplattingRemoveHandler(): Parameters<GaussianSplatControl["on"]>[1] {
@@ -5760,10 +5962,23 @@ function createLidarStoreLayer(pointCloud: PointCloudInfo): GeoLibreLayer {
   };
 }
 
+/** Placement parameters a Gaussian splat / 3D model is loaded with. Unlike a
+ * point cloud, a splat/model carries no bounds of its own to derive a
+ * position from, so this has to be captured from the control's state at load
+ * time and persisted alongside the layer to survive a project reload. */
+interface SplattingPlacement {
+  longitude: number;
+  latitude: number;
+  altitude: number;
+  rotation: [number, number, number];
+  scale: number;
+}
+
 function createSplattingStoreLayer(
   id: string,
   url: string,
   assetType: "model" | "splat",
+  placement?: SplattingPlacement,
 ): GeoLibreLayer {
   return {
     id,
@@ -5774,6 +5989,7 @@ function createSplattingStoreLayer(
       sourceId: id,
       type: "gaussian-splat",
       url,
+      ...(placement ? { placement } : {}),
     },
     visible: true,
     opacity: splattingLayerAdapter?.getLayerState(id)?.opacity ?? 1,
@@ -5784,9 +6000,29 @@ function createSplattingStoreLayer(
       externalNativeLayer: true,
       identifiable: false,
       sourceId: id,
-      sourceKind: "splatting-url",
+      sourceKind: SPLATTING_SOURCE_KIND,
     },
     sourcePath: url,
+  };
+}
+
+/** Reads back the placement persisted by {@link createSplattingStoreLayer},
+ * defaulting any missing/malformed field so a project file hand-edited or
+ * saved before placement persistence existed still restores (at the
+ * control's own defaults) instead of failing to load. */
+function readSplattingPlacement(layer: GeoLibreLayer): SplattingPlacement {
+  const source = layer.source as { placement?: Partial<SplattingPlacement> };
+  const placement = source.placement ?? {};
+  const rotation = placement.rotation;
+  return {
+    longitude: typeof placement.longitude === "number" ? placement.longitude : 0,
+    latitude: typeof placement.latitude === "number" ? placement.latitude : 0,
+    altitude: typeof placement.altitude === "number" ? placement.altitude : 0,
+    rotation:
+      Array.isArray(rotation) && rotation.length === 3
+        ? (rotation as [number, number, number])
+        : [0, 0, 0],
+    scale: typeof placement.scale === "number" ? placement.scale : 1,
   };
 }
 
@@ -5919,7 +6155,7 @@ function isLidarControlLayer(layer: GeoLibreLayer): boolean {
 function isSplattingControlLayer(layer: GeoLibreLayer): boolean {
   return (
     layer.type === "gaussian-splat" &&
-    layer.metadata.sourceKind === "splatting-url" &&
+    layer.metadata.sourceKind === SPLATTING_SOURCE_KIND &&
     layer.metadata.externalNativeLayer === true
   );
 }
@@ -6617,4 +6853,8 @@ function getSplattingControlContainer(control: GaussianSplatControl | null): HTM
 
 function hasLidarPointCloud(id: string): boolean {
   return lidarControl?.getPointClouds().some((pointCloud) => pointCloud.id === id) ?? false;
+}
+
+function hasSplattingLayer(id: string): boolean {
+  return splattingLayerAdapter?.getLayerIds().includes(id) ?? false;
 }

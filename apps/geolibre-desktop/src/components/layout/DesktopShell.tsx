@@ -29,6 +29,7 @@ import {
   reattachFlightSimulator,
   restoreArcGISViewportLayers,
   restoreRasterLayers,
+  restoreSplattingLayers,
   restoreThreeDTilesLayers,
   restoreVectorLayers,
   setBookmarkLabels,
@@ -1316,6 +1317,14 @@ export function DesktopShell({
     // renders nothing.
     void restoreLidarLayers(appAPI).catch((error: unknown) => {
       console.warn("[lidar] failed to restore saved point clouds", error);
+    });
+    // Re-attach saved Gaussian splat / 3D model layers. A `splatting-url`
+    // layer restores into the store as inert metadata; the splat/model is
+    // loaded by the splat control, not the store, so without this the layer
+    // shows in the panel but renders nothing (and, unlike LiDAR, would also
+    // lose its saved real-world placement).
+    void restoreSplattingLayers(appAPI).catch((error: unknown) => {
+      console.warn("[splatting] failed to restore saved layers", error);
     });
     // Re-read drag-dropped / Add Data local-file GeoJSON layers from disk
     // (their data was saved as a path, not embedded).

@@ -24,8 +24,10 @@ import {
   restoreLidarLayers,
   restorePlanetaryComputerLayers,
   restoreRasterLayers,
+  restoreSplattingLayers,
   restoreThreeDTilesLayers,
   restoreVectorLayers,
+  SPLATTING_SOURCE_KIND,
   THREE_D_TILES_SOURCE_KIND,
   VECTOR_SOURCE_KIND,
   type GeoLibreAppAPI,
@@ -48,6 +50,7 @@ const RESTORE_BY_SOURCE_KIND: Record<string, (app: GeoLibreAppAPI) => void | Pro
   [PLANETARY_COMPUTER_SOURCE_KIND]: restorePlanetaryComputerLayers,
   [THREE_D_TILES_SOURCE_KIND]: restoreThreeDTilesLayers,
   [LIDAR_SOURCE_KIND]: restoreLidarLayers,
+  [SPLATTING_SOURCE_KIND]: restoreSplattingLayers,
 };
 
 /**
@@ -104,10 +107,11 @@ export function canRestoreLibraryLayer(layer: GeoLibreLayer): boolean {
  * Run the plugin restore pass that renders `layer`, if it is control-painted and
  * needs one. A no-op for a layer the map sync rebuilds from the record.
  *
- * **Does not wait for the layer to appear.** Four of the five passes are
- * `(app) => void` and fire their real work into a floating `void (async () =>
- * …)()` internally (see `restoreVectorLayers`), so awaiting them only spans the
- * dispatch; only `restoreLidarLayers` returns a real promise. Making this
+ * **Does not wait for the layer to appear.** Most passes are `(app) => void`
+ * and fire their real work into a floating `void (async () => …)()`
+ * internally (see `restoreVectorLayers`), so awaiting them only spans the
+ * dispatch; only `restoreLidarLayers` and `restoreSplattingLayers` return a
+ * real promise. Making this
  * genuinely awaitable means changing those plugins' signatures, which the
  * project-load path shares — out of scope here, so the caller's busy flag covers
  * the dispatch window rather than the full re-ingest.
