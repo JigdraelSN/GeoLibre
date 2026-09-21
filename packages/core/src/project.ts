@@ -1439,6 +1439,21 @@ function isPlainObject(value: object): boolean {
   return prototype === Object.prototype || prototype === null;
 }
 
+/**
+ * MTH: survey/CAD deliverables are named per their DXF/DWG export (e.g.
+ * "HER-R4 design (cl)" vs "HER-R4 full view (fv, partial)"), and a "design"
+ * export is working/reference geometry the team doesn't want cluttering the
+ * map by default for every colleague who opens the project.
+ *
+ * Deliberately re-applied on every load, not just the first: toggling one
+ * back on with the eye icon is a "let me look this session" action, not a
+ * saved preference. Even after an explicit save, the next open (by anyone,
+ * including whoever toggled it) starts the layer hidden again.
+ */
+function isHiddenByDefaultCadLayer(layer: GeoLibreLayer): boolean {
+  return layer.metadata?.sourceKind === "cad" && /\bdesign\b/i.test(layer.name ?? "");
+}
+
 function normalizeLayer(layer: GeoLibreLayer): GeoLibreLayer {
   // `capabilities` is split off the spread rather than overwritten: a raw value
   // that normalizes to nothing (`{}`, an array, a string, an object with no
@@ -1449,7 +1464,7 @@ function normalizeLayer(layer: GeoLibreLayer): GeoLibreLayer {
   return {
     ...rest,
     style: { ...DEFAULT_LAYER_STYLE, ...layer.style },
-    visible: layer.visible ?? true,
+    visible: isHiddenByDefaultCadLayer(layer) ? false : (layer.visible ?? true),
     opacity: layer.opacity ?? 1,
     metadata: layer.metadata ?? {},
     source: layer.source ?? {},
