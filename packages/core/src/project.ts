@@ -1452,6 +1452,15 @@ function isPlainObject(value: object): boolean {
  * when read but breaks an exact-string match. A keyword match is immune to
  * all of that, the same way the "design" pattern already is.
  *
+ * Deliberately NOT gated on `metadata.sourceKind === "cad"`: a "fixpunkter"
+ * layer is often a control-point list brought in as CSV/points rather than
+ * parsed straight out of the DXF, so it may not carry that tag even though
+ * it's the same survey deliverable sitting in the same "CAD / Survey" group.
+ * The naming convention alone is a reliable enough signal on its own here —
+ * false positives from an unrelated layer that happens to be named "design"
+ * or "fixpunkter" are an acceptable, easily-toggled-back-on trade-off against
+ * silently failing to hide the layer this is actually meant to catch.
+ *
  * Deliberately re-applied on every load, not just the first: toggling one
  * back on with the eye icon is a "let me look this session" action, not a
  * saved preference. Even after an explicit save, the next open (by anyone,
@@ -1467,7 +1476,7 @@ export function isHiddenByDefaultCadLayerName(name: string | undefined): boolean
 }
 
 function isHiddenByDefaultCadLayer(layer: GeoLibreLayer): boolean {
-  return layer.metadata?.sourceKind === "cad" && isHiddenByDefaultCadLayerName(layer.name);
+  return isHiddenByDefaultCadLayerName(layer.name);
 }
 
 function normalizeLayer(layer: GeoLibreLayer): GeoLibreLayer {
