@@ -1440,18 +1440,40 @@ function isPlainObject(value: object): boolean {
 }
 
 /**
+ * MTH: exact CAD/survey layer names that default to hidden even though they
+ * don't follow the "design" naming pattern below — currently just the
+ * existing-control-points deliverable, which clutters a fresh import as
+ * badly as a "design" layer despite not sharing that naming convention.
+ * Matched case-insensitively/trimmed; a differently-named fixpunkter layer
+ * (a different Entreprise number, say) is NOT covered by this list.
+ */
+const HIDDEN_BY_DEFAULT_CAD_LAYER_NAMES = new Set(
+  ["Eksisterende fixpunkter (Entreprise 1340-203)"].map((name) => name.trim().toLowerCase()),
+);
+
+/**
  * MTH: survey/CAD deliverables are named per their DXF/DWG export (e.g.
  * "HER-R4 design (cl)" vs "HER-R4 full view (fv, partial)"), and a "design"
  * export is working/reference geometry the team doesn't want cluttering the
- * map by default for every colleague who opens the project.
+ * map by default for every colleague who opens the project. A handful of
+ * other specific layer names (HIDDEN_BY_DEFAULT_CAD_LAYER_NAMES above) get
+ * the same treatment despite not matching "design".
  *
  * Deliberately re-applied on every load, not just the first: toggling one
  * back on with the eye icon is a "let me look this session" action, not a
  * saved preference. Even after an explicit save, the next open (by anyone,
  * including whoever toggled it) starts the layer hidden again.
+ *
+ * Exported so CadSource.tsx can apply the identical rule to a bare layer
+ * name at import time, before a full GeoLibreLayer (with metadata) exists.
  */
+export function isHiddenByDefaultCadLayerName(name: string | undefined): boolean {
+  const trimmed = (name ?? "").trim();
+  return /\bdesign\b/i.test(trimmed) || HIDDEN_BY_DEFAULT_CAD_LAYER_NAMES.has(trimmed.toLowerCase());
+}
+
 function isHiddenByDefaultCadLayer(layer: GeoLibreLayer): boolean {
-  return layer.metadata?.sourceKind === "cad" && /\bdesign\b/i.test(layer.name ?? "");
+  return layer.metadata?.sourceKind === "cad" && isHiddenByDefaultCadLayerName(layer.name);
 }
 
 function normalizeLayer(layer: GeoLibreLayer): GeoLibreLayer {

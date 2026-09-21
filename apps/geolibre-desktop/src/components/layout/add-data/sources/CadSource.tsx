@@ -1,3 +1,4 @@
+import { isHiddenByDefaultCadLayerName } from "@geolibre/core";
 import { Button, Input, Label, Select } from "@geolibre/ui";
 import { FileUp, Layers } from "lucide-react";
 import { useRef, useState } from "react";
@@ -191,11 +192,16 @@ export function CadSource() {
         // MTH: survey/CAD deliverables are named per their DXF/DWG export
         // (e.g. "HER-R4 design (cl)" vs "HER-R4 full view (fv, partial)"),
         // and a "design" export is working/reference geometry the team
-        // doesn't want cluttering the map by default. Default those hidden;
-        // the eye icon still toggles them on same as any other layer — this
-        // only changes what a fresh import (or a colleague opening this
-        // project for the first time) starts with, not the toggle itself.
-        visible: !/\bdesign\b/i.test(name),
+        // doesn't want cluttering the map by default. A few other specific
+        // deliverables (e.g. the existing-control-points layer) get the same
+        // treatment — see isHiddenByDefaultCadLayerName in @geolibre/core,
+        // which packages/core/src/project.ts also uses so this applies to
+        // layers already sitting in existing saved projects, not just new
+        // imports. Default those hidden; the eye icon still toggles them on
+        // same as any other layer — this only changes what a fresh import
+        // (or a colleague opening this project for the first time) starts
+        // with, not the toggle itself.
+        visible: !isHiddenByDefaultCadLayerName(name),
         geojson: featureCollection,
         sourcePath: selectedFile.path,
       },
