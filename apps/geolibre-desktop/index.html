@@ -2,6 +2,34 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <!-- MTH: gis.mth.site's bare root normally shows the raw (empty) GeoLibre
+         shell -- nobody visits it with no query string on purpose; the branded
+         portal wrapper at /app/ is what "the site"/"the portal" means to MTH
+         and its colleagues. Every legitimate direct load of the raw app
+         carries a query string (a shared project link, a Whitebox tool deep
+         link, the portal's own map iframe, which always passes ?url=...), so
+         this only ever fires on a truly bare load. Hostname-gated so it's a
+         no-op for local dev, the desktop/Tauri build, the Jupyter embed, and
+         any other deployment of this fork -- see project.ts's
+         isHiddenByDefaultCadLayerName for the same "MTH-only, safe everywhere
+         else" pattern. -->
+    <script>
+      (function () {
+        try {
+          if (
+            window.location.hostname === "gis.mth.site" &&
+            window.location.pathname === "/" &&
+            window.location.search === "" &&
+            window.location.hash === "" &&
+            window.top === window.self
+          ) {
+            window.location.replace("/app/");
+          }
+        } catch (e) {
+          /* never block the app load over this */
+        }
+      })();
+    </script>
     <link rel="icon" type="image/png" href="%BASE_URL%favicon.png" sizes="32x32" />
     <link rel="icon" href="%BASE_URL%favicon.ico" sizes="any" />
     <link rel="apple-touch-icon" href="%BASE_URL%apple-touch-icon.png" />
